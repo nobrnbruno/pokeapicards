@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TCGdex Favorites</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; }
+        .container { max-width: 900px; margin: auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        input[type="text"], button { padding: 10px; margin: 5px 0; border-radius: 4px; border: 1px solid #ddd; }
+        button { background-color: #007bff; color: white; cursor: pointer; border: none; }
+        button:hover { background-color: #0056b3; }
+        .card-list, .favorite-list { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 20px; }
+        .card-item, .favorite-item { border: 1px solid #eee; padding: 10px; border-radius: 5px; text-align: center; width: 150px; background-color: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .card-item img, .favorite-item img { max-width: 100%; height: auto; border-radius: 3px; margin-bottom: 5px; }
+        .favorite-item button { background-color: #dc3545; }
+        .favorite-item button:hover { background-color: #c82333; }
+        h2 { border-bottom: 2px solid #007bff; padding-bottom: 10px; margin-top: 30px; }
+        .error { color: red; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>Minhas Cartas Pokémon Favoritas</h1>
+
+    ---
+
+    <h2>Buscar Cartas na TCGdex</h2>
+    <input type="text" id="searchInput" placeholder="Nome da carta (ex: Pikachu)">
+    <button onclick="searchCards()">Buscar</button>
+    <div id="searchResults" class="card-list"></div>
+    <p id="searchError" class="error"></p>
+
+    ---
+
+    <h2>Minhas Cartas Favoritas</h2>
+    <button onclick="loadFavorites()">Atualizar Favoritos</button>
+    <div id="favoriteCards" class="favorite-list"></div>
+    <p id="favoriteError" class="error"></p>
+</div>
+
+<script>
+    const API_BASE_URL = 'http://localhost:8080/api';
+
+    async function searchCards() {
+        const searchInput = document.getElementById('searchInput').value;
+        const searchResultsDiv = document.getElementById('searchResults');
+        const searchErrorDiv = document.getElementById('searchError');
+        searchResultsDiv.innerHTML = '';
+        searchErrorDiv.textContent = '';
+
+        if (!searchInput) {
+            searchErrorDiv.textContent = 'Por favor, digite um nome de carta para buscar.';
+            return;
+        }
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/cards?name=${encodeURIComponent(searchInput)}`);
+            if (!response.ok) {
+                throw new Error(`Erro ao buscar cartas: ${response.statusText}`);
+            }
+            const cards = await response.json();
+
+            if (cards.length === 0) {
+                searchResultsDiv.innerHTML = '<p>Nenhuma carta encontrada com esse nome.</p>';
+            } else {
+                cards.forEach(card => {
+                    const cardItem = document.createElement('div');
+                    cardItem.className = 'card-item';
+                    cardItem.innerHTML = `
+                            <img src="${card.imageUrl}" alt="${card.name}" width="100">
+                            <p>${card.name}</p>
+                            <button onclick="addFavorite('${card.id}')">Adicionar aos Favoritos</button>
+                        `;
+                    searchResultsDiv.appendChild(cardItem);
+                });
+            }
+        } catch (error) {
+            searchErrorDiv.textContent = `Erro: ${error.message}`;
+            console.error('Erro ao buscar cartas:', error);
+        }
+    }
+
+    async function addFavorite(cardId) {
+        const favoriteErrorDiv = document.getElementById('favoriteError');
+        favoriteErrorDiv.textContent = '';
+        try {
+            const response = await fetch(`${API_BASE_URL}/favorites/add`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/plain' // Enviando o ID como texto simples
+                },
+                body: cardId
+            });
+
+            if (response.status === 400) { // Bad Request, já é favorito
+                favoriteErrorDiv.textContent = 'Essa carta já está nos seus favoritos.';
+            } else if (!response.ok) {
+                throw new Error(`Erro ao adicionar favorito: ${response.statusText}`);
+            } else {
+                await response.json(); // Consumir a resposta mesmo que não a usemos diretamente
+                loadFavorites(); // Recarrega a lista de favoritos
+            }
+        } catch (error) {
+            favoriteErrorDiv.textContent = `Erro: ${error.message}`;
+            console.error('Erro ao adicionar favorito:', error);
+        }
+    }
+
+    async function loadFavorites() {
+        const favoriteCardsDiv = document.getElementById('favoriteCards');
+        const favoriteErrorDiv = document.getElementById('favoriteError');
+        favoriteCardsDiv.innerHTML = '';
+        favoriteErrorDiv.textContent = '';
+
+        try {
+            const response = await fetch(`${API_BASE_URL}/favorites`);
+            if (!response.ok) {
+                throw new Error(`Erro ao carregar favoritos: ${response.statusText}`);
+            }
+            const favorites = await response.json();
+
+            if (favorites.length === 0) {
+                favoriteCardsDiv.innerHTML = '<p>Você não tem nenhuma carta favorita ainda.</p>';
+            } else {
+                favorites.forEach(favCard => {
+                    const favItem = document.createElement('div');
+                    favItem.className = 'favorite-item';
+                    favItem.innerHTML = `
+                            <img src="${favCard.imageUrl}" alt="${favCard.cardName}" width="100">
+                            <p>${favCard.cardName}</p>
+                            <button onclick="removeFavorite('${favCard.cardId}')">Remover</button>
+                        `;
+                    favoriteCardsDiv.appendChild(favItem);
+                });
+            }
+        } catch (error) {
+            favoriteErrorDiv.textContent = `Erro: ${error.message}`;
+            console.error('Erro ao carregar favoritos:', error);
+        }
+    }
+
+    async function removeFavorite(cardId) {
+        const favoriteErrorDiv = document.getElementById('favoriteError');
+        favoriteErrorDiv.textContent = '';
+        try {
+            const response = await fetch(`${API_BASE_URL}/favorites/${cardId}`, {
+                method: 'DELETE'
+            });
+
+            if (response.status === 404) { // Not Found
+                favoriteErrorDiv.textContent = 'Essa carta não foi encontrada nos seus favoritos.';
+            } else if (!response.ok) {
+                throw new Error(`Erro ao remover favorito: ${response.statusText}`);
+            } else {
+                loadFavorites(); // Recarrega a lista de favoritos
+            }
+        } catch (error) {
+            favoriteErrorDiv.textContent = `Erro: ${error.message}`;
+            console.error('Erro ao remover favorito:', error);
+        }
+    }
+
+    // Carrega os favoritos ao iniciar a página
+    document.addEventListener('DOMContentLoaded', loadFavorites);
+</script>
+</body>
+</html>
