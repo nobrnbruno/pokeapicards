@@ -3,6 +3,7 @@
 Uma API REST desenvolvida em **Spring Boot** que permite buscar cartas Pokémon e gerenciar uma lista personalizada de cartas favoritas.
 
 Documentação OpenAPI: https://app.swaggerhub.com/apis/ufc-4da/Pokeapicards/1.0
+
 Vídeo de demonstração: https://github.com/nobrnbruno/pokeapicards/blob/master/demo.mp4
 
 ## 📋 Funcionalidades
