@@ -4,118 +4,107 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.util.Collections;
 import java.util.List;
-import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import java.util.Map;
 
 @Service
 public class CardService {
 
-    private static final Logger log = LoggerFactory.getLogger(CardService.class);
-
     private final WebClient webClient;
     private final FavoriteCardRepository favoriteCardRepository;
-    private final ObjectMapper objectMapper;
 
-    public CardService(WebClient.Builder webClientBuilder, FavoriteCardRepository favoriteCardRepository) {
-        this.webClient = webClientBuilder.baseUrl("https://api.tcgdex.net/v2").build();
+    public CardService(FavoriteCardRepository favoriteCardRepository) {
         this.favoriteCardRepository = favoriteCardRepository;
-        this.objectMapper = new ObjectMapper();
+        this.webClient = WebClient.builder()
+                .baseUrl("https://api.pokemontcg.io/v2")
+                .build();
     }
 
-    // --- GET cards by name ---
-    public Object searchCards(String name) {
-        log.info("Buscando cartas com nome: {}", name);
-
+    public Mono<List<Card>> searchCards(String name) {
         return webClient.get()
-                .uri(uriBuilder -> uriBuilder.path("/en/cards").queryParam("name", name).build())
+                .uri(uriBuilder -> uriBuilder
+                        .path("/cards")
+                        .queryParam("q", "name:" + name + "*")
+                        .build())
                 .retrieve()
-                .bodyToMono(JsonNode.class)
-                .doOnNext(json -> log.debug("Resposta JSON (searchCards): {}", json.toPrettyString()))
-                .map(jsonNode -> {
-                    JsonNode dataNode = jsonNode.get("data");
-                    if (dataNode != null && dataNode.isArray()) {
-                        return StreamSupport.stream(dataNode.spliterator(), false)
-                                .map(node -> {
-                                    String id = node.path("id").asText();
-                                    String cardName = node.path("name").asText();
-                                    String imageUrl = node.path("image").path("url").asText();
-                                    return new Card(id, cardName, imageUrl);
-                                })
-                                .collect(Collectors.toList());
+                .bodyToMono(Map.class)
+                .map(response -> {
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> cardsData = (List<Map<String, Object>>) response.get("data");
+                    if (cardsData == null) {
+                        return List.<Card>of();
                     }
-                    log.warn("Nenhum array 'data' encontrado para nome: {}", name);
-                    return Collections.emptyList();
+
+                    return cardsData.stream()
+                            .map(this::mapToCard)
+                            .collect(java.util.stream.Collectors.toList());
                 })
-                .defaultIfEmpty(Collections.emptyList())
-                .doOnError(e -> log.error("Erro ao buscar cartas: {}", e.getMessage(), e));
+                .onErrorReturn(List.of()); // Retorna lista vazia em caso de erro
     }
 
-    // --- GET card by ID ---
-    public Mono<Card> getCardById(String id) {
-        log.info("Buscando carta por ID: {}", id);
+    private Card mapToCard(Map<String, Object> cardData) {
+        String id = (String) cardData.get("id");
+        String name = (String) cardData.get("name");
 
-        return webClient.get()
-                .uri("/en/cards/{id}", id)
-                .retrieve()
-                .bodyToMono(JsonNode.class)
-                .doOnNext(json -> log.debug("Resposta JSON (getCardById): {}", json.toPrettyString()))
-                .flatMap(jsonNode -> {
-                    JsonNode dataNode = jsonNode.get("data");
-                    if (dataNode != null && dataNode.isObject()) {
-                        String cardId = dataNode.path("id").asText();
-                        String cardName = dataNode.path("name").asText();
-                        String imageUrl = dataNode.path("image").path("url").asText();
-                        return Mono.just(new Card(cardId, cardName, imageUrl));
-                    }
-                    log.warn("Carta não encontrada para ID: {}", id);
-                    return Mono.empty();
-                })
-                .doOnError(e -> log.error("Erro ao buscar carta por ID: {}", e.getMessage(), e));
+        // Extrai a URL da imagem da API oficial do Pokémon TCG
+        String imageUrl = null;
+        Map<String, Object> images = (Map<String, Object>) cardData.get("images");
+        if (images != null) {
+            imageUrl = (String) images.get("small");
+            if (imageUrl == null) {
+                imageUrl = (String) images.get("large");
+            }
+        }
+
+        return new Card(id, name, imageUrl);
     }
 
-    // --- GET favoritos ---
     public Flux<FavoriteCard> getAllFavoriteCards() {
-        List<FavoriteCard> allFavorites = (List<FavoriteCard>) favoriteCardRepository.findAll();
-        return Flux.fromIterable(allFavorites)
-                .doOnComplete(() -> log.info("Carregadas {} cartas favoritas.", allFavorites.size()))
-                .doOnError(e -> log.error("Erro ao carregar cartas favoritas: {}", e.getMessage(), e));
+        return Flux.fromIterable(favoriteCardRepository.findAll());
     }
 
-    // --- POST favoritos ---
     public Mono<FavoriteCard> addFavoriteCard(String cardId) {
+        // Verifica se já existe nos favoritos
         if (favoriteCardRepository.existsById(cardId)) {
-            log.warn("Carta já está nos favoritos: {}", cardId);
             return Mono.error(new IllegalArgumentException("Card already in favorites"));
         }
 
-        return getCardById(cardId)
-                .flatMap(card -> {
-                    FavoriteCard newFavorite = new FavoriteCard(card.getId(), card.getName(), card.getImageUrl());
-                    FavoriteCard savedCard = favoriteCardRepository.save(newFavorite);
-                    log.info("Adicionada aos favoritos: {} ({})", savedCard.getCardName(), savedCard.getCardId());
-                    return Mono.just(savedCard);
+        // Busca os detalhes da carta na API
+        return webClient.get()
+                .uri("/cards/{id}", cardId)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(response -> {
+                    Map<String, Object> cardData = (Map<String, Object>) response.get("data");
+                    if (cardData == null) {
+                        throw new IllegalArgumentException("Card not found");
+                    }
+
+                    String name = (String) cardData.get("name");
+                    String imageUrl = null;
+
+                    Map<String, Object> images = (Map<String, Object>) cardData.get("images");
+                    if (images != null) {
+                        imageUrl = (String) images.get("small");
+                        if (imageUrl == null) {
+                            imageUrl = (String) images.get("large");
+                        }
+                    }
+
+                    FavoriteCard favoriteCard = new FavoriteCard(cardId, name, imageUrl);
+                    return favoriteCardRepository.save(favoriteCard);
                 })
-                .switchIfEmpty(Mono.error(new IllegalArgumentException("Card not found in TCGdex API: " + cardId)))
-                .doOnError(e -> log.error("Erro ao adicionar carta {}: {}", cardId, e.getMessage(), e));
+                .onErrorMap(Exception.class, e ->
+                        new IllegalArgumentException("Error adding card to favorites: " + e.getMessage()));
     }
 
-    // --- DELETE favoritos ---
     public Mono<Void> removeFavoriteCard(String cardId) {
         if (!favoriteCardRepository.existsById(cardId)) {
-            log.warn("Tentativa de remover carta inexistente: {}", cardId);
-            return Mono.error(new IllegalArgumentException("Card not found in favorites: " + cardId));
+            return Mono.error(new IllegalArgumentException("Card not found in favorites"));
         }
 
         favoriteCardRepository.deleteById(cardId);
-        log.info("Carta com ID {} removida dos favoritos.", cardId);
         return Mono.empty();
     }
 }
